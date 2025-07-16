@@ -34,21 +34,21 @@ echo "Cloning AnyKernel3 for packing kernel..."
 if [ -d "anykernel/.git" ]; then
     echo "AnyKernel3 already cloned. Skipping."
 else
-    rm -rf anykernel  # ensure clean state
-    git clone https://github.com/CuriousNom/AnyKernel3 -b pipa-br  --single-branch --depth=1 anykernel
+    rm -rf anykernel  #ensure clean state
+    git clone https://github.com/CuriousNom/AnyKernel3 -b pipa-br --single-branch --depth=1 anykernel
 fi
 
-    # ------------- Building for AOSP ---------------
-    echo "Clearing [out/] and building for AOSP....."
+    # ------------- Building for MIUI/HOS -------------
+    echo "Clearing [out/] and building for MIUI/HOS....."
 
-    make $MAKE_ARGS pipa_defconfig
+    make $MAKE_ARGS pipa_defconfig miui.config
 
     make $MAKE_ARGS -j$(nproc --all) 2> >(tee -a error.log >&2)
 
     if [ -f "out/arch/arm64/boot/Image.gz" ]; then
-        echo "The file [out/arch/arm64/boot/Image.gz] exists. AOSP Build successfully."
+        echo "The file [out/arch/arm64/boot/Image.gz] exists. MIUI Build successfully."
     else
-        echo "The file [out/arch/arm64/boot/Image.gz] does not exist. Seems AOSP build failed."
+        echo "The file [out/arch/arm64/boot/Image.gz] does not exist. Seems MIUI build failed."
         exit 1
     fi
 
@@ -58,11 +58,11 @@ fi
     cp out/arch/arm64/boot/dtb anykernel/kernels/
 
     cd anykernel
-    ZIP_FILENAME=Kernel_BloodReaper_AOSP_pipa_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip
+    ZIP_FILENAME=Kernel_BloodReaper_MIUI_pipa_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip
     zip -r9 $ZIP_FILENAME ./* -x .git .gitignore out/ ./*.zip
     mv $ZIP_FILENAME ../
     cd ..
 
-    echo "Build for AOSP finished."
+    echo "Build for MIUI/HOS finished."
 
 echo "Done. The flashable zip is: [./$ZIP_FILENAME]"
