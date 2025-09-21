@@ -37,7 +37,6 @@ struct fscrypt_name {
 	u32 minor_hash;
 	struct fscrypt_str crypto_buf;
 	bool is_nokey_name;
-	bool is_ciphertext_name;
 };
 
 #define FSTR_INIT(n, l)		{ .name = n, .len = l }
@@ -144,7 +143,7 @@ static inline void fscrypt_handle_d_move(struct dentry *dentry)
  */
 static inline bool fscrypt_is_nokey_name(const struct dentry *dentry)
 {
-	return dentry->d_flags & DCACHE_NOKEY_NAME;
+	return dentry->d_flags & DCACHE_ENCRYPTED_NAME;
 }
 
 /* crypto.c */
