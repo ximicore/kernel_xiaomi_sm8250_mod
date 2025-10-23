@@ -180,7 +180,7 @@ static void vma_stop(struct proc_maps_private *priv)
 	struct mm_struct *mm = priv->mm;
 
 	release_task_mempolicy(priv);
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	mmput(mm);
 }
 
@@ -218,7 +218,7 @@ static void *m_start(struct seq_file *m, loff_t *ppos)
 	if (!mm || !mmget_not_zero(mm))
 		return NULL;
 
-	if (down_read_killable(&mm->mmap_sem)) {
+	if (mmap_read_lock_killable(mm)) {
 		mmput(mm);
 		return ERR_PTR(-EINTR);
 	}
@@ -724,6 +724,9 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
 		[ilog2(VM_PKEY_BIT4)]	= "",
 #endif
 #endif /* CONFIG_ARCH_HAS_PKEYS */
+#ifdef CONFIG_HAVE_ARCH_USERFAULTFD_MINOR
+		[ilog2(VM_UFFD_MINOR)]	= "ui",
+#endif /* CONFIG_HAVE_ARCH_USERFAULTFD_MINOR */
 	};
 	size_t i;
 
@@ -894,7 +897,7 @@ static int show_smaps_rollup(struct seq_file *m, void *v)
 
 	memset(&mss, 0, sizeof(mss));
 
-	ret = down_read_killable(&mm->mmap_sem);
+	ret = mmap_read_lock_killable(mm);
 	if (ret)
 		goto out_put_mm;
 
@@ -913,7 +916,7 @@ static int show_smaps_rollup(struct seq_file *m, void *v)
 	__show_smap(m, &mss);
 
 	release_task_mempolicy(priv);
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 
 out_put_mm:
 	mmput(mm);
@@ -1185,7 +1188,7 @@ static ssize_t clear_refs_write(struct file *file, const char __user *buf,
 		};
 
 		if (type == CLEAR_REFS_MM_HIWATER_RSS) {
-			if (down_write_killable(&mm->mmap_sem)) {
+			if (mmap_write_lock_killable(mm)) {
 				count = -EINTR;
 				goto out_mm;
 			}
@@ -1195,11 +1198,11 @@ static ssize_t clear_refs_write(struct file *file, const char __user *buf,
 			 * resident set size to this mm's current rss value.
 			 */
 			reset_mm_hiwater_rss(mm);
-			up_write(&mm->mmap_sem);
+			mmap_write_unlock(mm);
 			goto out_mm;
 		}
 
-		if (down_read_killable(&mm->mmap_sem)) {
+		if (mmap_read_lock_killable(mm)) {
 			count = -EINTR;
 			goto out_mm;
 		}
@@ -1208,8 +1211,8 @@ static ssize_t clear_refs_write(struct file *file, const char __user *buf,
 			for (vma = mm->mmap; vma; vma = vma->vm_next) {
 				if (!(vma->vm_flags & VM_SOFTDIRTY))
 					continue;
-				up_read(&mm->mmap_sem);
-				if (down_write_killable(&mm->mmap_sem)) {
+				mmap_read_unlock(mm);
+				if (mmap_write_lock_killable(mm)) {
 					count = -EINTR;
 					goto out_mm;
 				}
@@ -1228,17 +1231,14 @@ static ssize_t clear_refs_write(struct file *file, const char __user *buf,
 					 * failed like if
 					 * get_proc_task() fails?
 					 */
-					up_write(&mm->mmap_sem);
+					mmap_write_unlock(mm);
 					goto out_mm;
 				}
 				for (vma = mm->mmap; vma; vma = vma->vm_next) {
-					vm_write_begin(vma);
-					WRITE_ONCE(vma->vm_flags,
-						vma->vm_flags & ~VM_SOFTDIRTY);
+					vma->vm_flags &= ~VM_SOFTDIRTY;
 					vma_set_page_prot(vma);
-					vm_write_end(vma);
 				}
-				downgrade_write(&mm->mmap_sem);
+				mmap_write_downgrade(mm);
 				break;
 			}
 			mmu_notifier_invalidate_range_start(mm, 0, -1);
@@ -1247,7 +1247,7 @@ static ssize_t clear_refs_write(struct file *file, const char __user *buf,
 		if (type == CLEAR_REFS_SOFT_DIRTY)
 			mmu_notifier_invalidate_range_end(mm, 0, -1);
 		tlb_finish_mmu(&tlb, 0, -1);
-		up_read(&mm->mmap_sem);
+		mmap_read_unlock(mm);
 out_mm:
 		mmput(mm);
 	}
@@ -1609,11 +1609,11 @@ static ssize_t pagemap_read(struct file *file, char __user *buf,
 		/* overflow ? */
 		if (end < start_vaddr || end > end_vaddr)
 			end = end_vaddr;
-		ret = down_read_killable(&mm->mmap_sem);
+		ret = mmap_read_lock_killable(mm);
 		if (ret)
 			goto out_free;
 		ret = walk_page_range(start_vaddr, end, &pagemap_walk);
-		up_read(&mm->mmap_sem);
+		mmap_read_unlock(mm);
 		start_vaddr = end;
 
 		len = min(count, PM_ENTRY_BYTES * pm.pos);
@@ -1666,40 +1666,6 @@ const struct file_operations proc_pagemap_operations = {
 #endif /* CONFIG_PROC_PAGE_MONITOR */
 
 #ifdef CONFIG_PROCESS_RECLAIM
-
-#define FOREGROUND_APP_ADJ 0
-#define CACHED_APP_MIN_ADJ 900
-
-static bool running_state = true;
-static inline bool can_reclaim(short before_reclaim_adj,
-	struct mm_struct *mm, struct task_struct *task)
-{
-	short cur_oom_score_adj;
-
-	if (running_state == false ||
-			fatal_signal_pending(task) ||
-			task->flags & PF_EXITING ||
-			!list_empty(&mm->mmap_sem.wait_list)) {
-		pr_info("stop reclaim: force\n");
-
-		return false;
-	}
-
-	cur_oom_score_adj = task->signal->oom_score_adj;
-	if ((cur_oom_score_adj < CACHED_APP_MIN_ADJ &&
-			cur_oom_score_adj < before_reclaim_adj) ||
-			FOREGROUND_APP_ADJ == cur_oom_score_adj) {
-		pr_info("[c:%s %d, r:%s %d] adj adjust %d %d\n",
-			current->comm, current->pid,
-			task->comm, task->pid,
-			before_reclaim_adj, cur_oom_score_adj);
-
-		return false;
-	}
-
-	return true;
-}
-
 static BLOCKING_NOTIFIER_HEAD(proc_reclaim_notifier);
 
 int proc_reclaim_notifier_register(struct notifier_block *nb)
@@ -1768,7 +1734,7 @@ int reclaim_address_space(struct address_space *mapping,
 	return ret;
 }
 
-int reclaim_pte_range(pmd_t *pmd, unsigned long addr,
+static int reclaim_pte_range(pmd_t *pmd, unsigned long addr,
 				unsigned long end, struct mm_walk *walk)
 {
 	struct reclaim_param *rp = walk->private;
@@ -1793,12 +1759,6 @@ cont:
 
 		page = vm_normal_page(vma, addr, ptent);
 		if (!page)
-			continue;
-
-		if (!PageLRU(page))
-			continue;
-
-		if (page_mapcount(page) != 1)
 			continue;
 
 		if (isolate_lru_page(compound_head(page)))
@@ -1835,7 +1795,7 @@ cont:
 		goto cont;
 
 	cond_resched();
-	return (rp->nr_to_reclaim == 0) ? -EPIPE : 0;
+	return 0;
 }
 
 enum reclaim_type {
@@ -1857,11 +1817,11 @@ struct reclaim_param reclaim_task_nomap(struct task_struct *task,
 	mm = get_task_mm(task);
 	if (!mm)
 		goto out;
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 
 	proc_reclaim_notify((unsigned long)task_pid(task), (void *)&rp);
 
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	mmput(mm);
 out:
 	put_task_struct(task);
@@ -1888,7 +1848,7 @@ struct reclaim_param reclaim_task_anon(struct task_struct *task,
 
 	reclaim_walk.private = &rp;
 
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (is_vm_hugetlb_page(vma))
 			continue;
@@ -1905,7 +1865,7 @@ struct reclaim_param reclaim_task_anon(struct task_struct *task,
 	}
 
 	flush_tlb_mm(mm);
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	mmput(mm);
 out:
 	put_task_struct(task);
@@ -1922,11 +1882,9 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 	enum reclaim_type type;
 	char *type_buf;
 	struct mm_walk reclaim_walk = {};
-	short before_reclaim_adj;
 	unsigned long start = 0;
 	unsigned long end = 0;
 	struct reclaim_param rp;
-	int ret;
 
 	memset(buffer, 0, sizeof(buffer));
 	if (count > sizeof(buffer) - 1)
@@ -1942,19 +1900,10 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 		type = RECLAIM_ANON;
 	else if (!strcmp(type_buf, "all"))
 		type = RECLAIM_ALL;
-	else if (!strcmp(type_buf, "start")) {
-		running_state = true;
-		return count;
-	} else if (!strcmp(type_buf, "end")) {
-		running_state = false;
-		return count;
-	} else if (isdigit(*type_buf))
+	else if (isdigit(*type_buf))
 		type = RECLAIM_RANGE;
 	else
 		goto out_err;
-
-	if (false == running_state)
-		return count;
 
 	if (type == RECLAIM_RANGE) {
 		char *token;
@@ -2002,11 +1951,7 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 	rp.nr_reclaimed = 0;
 	reclaim_walk.private = &rp;
 
-	if (NULL == task->signal)
-		goto out;
-
-	before_reclaim_adj = task->signal->oom_score_adj;
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	if (type == RECLAIM_RANGE) {
 		vma = find_vma(mm, start);
 		while (vma) {
@@ -2016,18 +1961,13 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 				continue;
 
 			rp.vma = vma;
-			ret = walk_page_range(max(vma->vm_start, start),
+			walk_page_range(max(vma->vm_start, start),
 					min(vma->vm_end, end),
 					&reclaim_walk);
-			if (ret)
-				break;
 			vma = vma->vm_next;
 		}
 	} else {
 		for (vma = mm->mmap; vma; vma = vma->vm_next) {
-			if (!can_reclaim(before_reclaim_adj, mm, task))
-				break;
-
 			if (is_vm_hugetlb_page(vma))
 				continue;
 
@@ -2038,15 +1978,13 @@ static ssize_t reclaim_write(struct file *file, const char __user *buf,
 				continue;
 
 			rp.vma = vma;
-			ret = walk_page_range(vma->vm_start, vma->vm_end,
+			walk_page_range(vma->vm_start, vma->vm_end,
 				&reclaim_walk);
-			if (ret)
-				break;
 		}
 	}
 
 	flush_tlb_mm(mm);
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	mmput(mm);
 out:
 	put_task_struct(task);
