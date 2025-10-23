@@ -5721,7 +5721,6 @@ static struct snd_soc_ops msm_mi2s_cs35l41_be_ops = {
 };
 #endif
 
-#ifdef CONFIG_BOARD_XIAOMI
 static int cs35l41_init(struct snd_soc_pcm_runtime *rtd)
 {
 #if 0
@@ -5764,7 +5763,6 @@ static int tfa98xx_init(struct snd_soc_pcm_runtime *rtd)
 	return 0;
 }
 #endif // CONFIG_TARGET_PRODUCT_MUNCH
-#endif // CONFIG_BOARD_XIAOMI
 
 static struct snd_soc_ops msm_fe_qos_ops = {
 	.prepare = msm_fe_qos_prepare,
@@ -7718,45 +7716,6 @@ static struct snd_soc_dai_link pri_mi2s_rx_tfa9874_dai_links[] = {
 };
 #endif
 
-#ifdef CONFIG_BOARD_XIAOMI_SM7250
-static struct snd_soc_dai_link sec_mi2s_rx_tfa9874_be_dai_links[] = {
-	{
-		.name = LPASS_BE_SEC_MI2S_RX,
-		.stream_name = "Secondary MI2S Playback",
-		.cpu_dai_name = "msm-dai-q6-mi2s.1",
-		.platform_name = "msm-pcm-routing",
-		.codec_name = "tfa98xx.1-0034",
-		.codec_dai_name = "tfa98xx-aif-1-34",
-		.no_pcm = 1,
-		.dpcm_playback = 1,
-		.id = MSM_BACKEND_DAI_SECONDARY_MI2S_RX,
-		.be_hw_params_fixup = msm_be_hw_params_fixup,
-		.ops = &msm_mi2s_be_ops,
-		.ignore_suspend = 1,
-		.ignore_pmdown_time = 1,
-	},
-};
-
-static struct snd_soc_dai_link sec_mi2s_rx_cs35l41_dai_links[] = {
-	{
-		.name = LPASS_BE_SEC_MI2S_RX,
-		.stream_name = "Secondary MI2S Playback",
-		.cpu_dai_name = "msm-dai-q6-mi2s.1",
-		.platform_name = "msm-pcm-routing",
-		.codecs = cs35l41_codec_components,
-		.num_codecs = ARRAY_SIZE(cs35l41_codec_components),
-		.no_pcm = 1,
-		.dpcm_playback = 1,
-		.id = MSM_BACKEND_DAI_SECONDARY_MI2S_RX,
-		.be_hw_params_fixup = msm_be_hw_params_fixup,
-		.ops = &msm_mi2s_be_ops,
-		.ignore_suspend = 1,
-		.ignore_pmdown_time = 1,
-		.init = &cs35l41_init,
-	},
-};
-
-#endif
 static struct snd_soc_dai_link msm_auxpcm_be_dai_links[] = {
 	/* Primary AUX PCM Backend DAI Links */
 	{
@@ -8155,10 +8114,6 @@ static struct snd_soc_dai_link msm_kona_dai_links[
 			ARRAY_SIZE(pri_mi2s_rx_tfa9874_dai_links) +
 			ARRAY_SIZE(tert_mi2s_rx_aw882xx_dai_links) +
 #endif
-#ifdef CONFIG_BOARD_XIAOMI_SM7250
-			ARRAY_SIZE(sec_mi2s_rx_tfa9874_be_dai_links) +
-			ARRAY_SIZE(sec_mi2s_rx_cs35l41_dai_links) +
-#endif
 			ARRAY_SIZE(msm_auxpcm_be_dai_links) +
 			ARRAY_SIZE(msm_wsa_cdc_dma_be_dai_links) +
 			ARRAY_SIZE(msm_rx_tx_cdc_dma_be_dai_links) +
@@ -8492,26 +8447,6 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 						sizeof(tert_mi2s_rx_aw882xx_dai_links));
 					total_links += ARRAY_SIZE(tert_mi2s_rx_aw882xx_dai_links);
 					dev_info(dev, "%s: Using tert_mi2s_rx_aw882xx_dai_links\n", __func__);
-				}
-#endif
-#ifdef CONFIG_BOARD_XIAOMI_SM7250
-				if (get_hw_version_platform() == HARDWARE_PLATFORM_PICASSO) {
-					memcpy(msm_kona_dai_links + total_links,
-						sec_mi2s_rx_tfa9874_be_dai_links,
-						sizeof(sec_mi2s_rx_tfa9874_be_dai_links));
-					total_links += ARRAY_SIZE(sec_mi2s_rx_tfa9874_be_dai_links);
-				}
-				if (get_hw_version_platform() == HARDWARE_PLATFORM_MONET) {
-				    memcpy(msm_kona_dai_links + total_links,
-					    sec_mi2s_rx_cs35l41_dai_links,
-					    sizeof(sec_mi2s_rx_cs35l41_dai_links));
-				    total_links += ARRAY_SIZE(sec_mi2s_rx_cs35l41_dai_links);
-				}
-				if (get_hw_version_platform() == HARDWARE_PLATFORM_VANGOGH) {
-				    memcpy(msm_kona_dai_links + total_links,
-					    sec_mi2s_rx_cs35l41_dai_links,
-					    sizeof(sec_mi2s_rx_cs35l41_dai_links));
-				    total_links += ARRAY_SIZE(sec_mi2s_rx_cs35l41_dai_links);
 				}
 #endif
 			}
